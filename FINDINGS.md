@@ -372,6 +372,178 @@ Para and Web3Auth — none of them ship Telegram natively.
 
 ---
 
+## Can the user use this wallet elsewhere?
+
+A common reviewer question. The honest answer is "it depends on which
+*elsewhere* you mean" — there are three different portability axes and
+Turnkey scores differently on each.
+
+### Axis 1 — Across other ENS apps (same parent org) → **Yes, naturally**
+
+When a user signs in via Google to App A (`ens.domains`), they get
+sub-org `X` and wallet address `0xABC`. When the same user signs in
+via Google to App B (`names.ens.domains`), they get the *same* sub-org
+and the *same* address — **provided both apps use the same Turnkey
+parent organisation**.
+
+Since ENS owns the parent organisation, this works for every
+ENS-operated app for free. The "Social Linking" whitelist we
+configured during setup is what enables this — it tells Turnkey to
+match new logins against existing sub-orgs by verified email.
+
+### Axis 2 — In third-party dApps outside ENS (Uniswap, OpenSea, …) → **Not built-in for Turnkey; Para ships a partial answer**
+
+The Turnkey embedded wallet **is not a standalone wallet** like
+MetaMask or Rabby. It lives inside an app that integrates Turnkey's
+SDK. A random dApp can't "connect to your Turnkey wallet" the way it
+can connect to a browser extension.
+
+Two architecturally distinct ways this gets fixed:
+
+**Option A — A WalletConnect bridge inside the integrator app.** This
+is what hard requirement #5 in `vendors.md` describes and what this
+POC deferred. Flow:
+
+1. User is in the ENS app, signed in via Turnkey (active session).
+2. User goes to Uniswap (or any dApp) in another tab → "Connect
+   Wallet" → "WalletConnect" → QR code or pairing URI.
+3. User pastes the URI into the ENS app's wallet view.
+4. The ENS app brokers the request: Uniswap ↔ WalletConnect ↔ ENS
+   app ↔ Turnkey signer.
+5. Uniswap thinks it's talking to a normal wallet.
+
+The signing itself is trivial — the Turnkey signer is a vanilla viem
+`LocalAccount` and `@reown/walletkit` is designed to wrap exactly
+this. What's not yet built is the inbound-WalletConnect routing.
+**We'd build it ourselves.**
+
+**Option B — Some vendors market a cross-app feature.** Para markets
+**"Para Connect"** as their "Universal Wallet" — the pitch is that
+one Para identity is reachable from every app that integrates Para's
+SDK. Taken at face value, that sounds like a substantive advantage.
+
+In practice it's much weaker than the marketing implies:
+
+- **Vendor-scoped, not universal.** "Reachable from every Para app"
+  means "reachable from apps that have integrated Para's SDK." The
+  ENS brief is explicit about this: *"'Universal wallet' features
+  that only work inside the vendor's integrator base do not satisfy
+  this."* The reach is bounded by Para's BD, not by what dApps the
+  user actually wants to use.
+- **Real-world adoption is small.** The set of consumer dApps that
+  ship Para integration today is short. Until Uniswap, OpenSea, etc.
+  integrate Para directly, the "universal" claim has nowhere to land.
+- **Doesn't solve the question users actually ask.** "Can I use my
+  wallet in Uniswap" is the real test, and the answer for Para Connect
+  is no — Uniswap doesn't integrate Para, so Para Connect is invisible
+  there. To use a Para wallet in Uniswap, the user goes through the
+  same WalletConnect bridge route as they would for Turnkey — Para
+  doesn't get a free pass on that path either.
+
+So Para Connect is best read as **marketing that doesn't survive
+contact with the actually-useful definition of "use my wallet
+elsewhere."** It does provide cross-Para-app continuity for the small
+set of apps that integrate Para, which is non-zero value but a long
+way from "universal."
+
+The architectural answer to the real question — *can the wallet talk
+to any dApp on the web* — is the WalletConnect-bridge-in-our-app
+pattern (Option A). That's what hard requirement #5 in `vendors.md`
+asks for, and it works the same regardless of which vendor produces
+the signer: any viem `LocalAccount` (or ethers `Signer`) routed
+through `@reown/walletkit` is reachable by every dApp that supports
+WalletConnect — which is effectively all of them.
+
+For ENS, the practical comparison:
+
+| | Para | Turnkey |
+|---|---|---|
+| Cross-vendor-app reach (built-in) | "Para Connect" — small in practice | None |
+| Cross-app reach to arbitrary dApps | Same path as Turnkey: WalletConnect bridge inside the integrator app | Same path as Para: WalletConnect bridge inside the integrator app |
+| Time to wire a real WalletConnect bridge | ~1 day with `@reown/walletkit` | ~1 day with `@reown/walletkit` |
+| Does this satisfy the ENS brief? | **No** — Para Connect is vendor-scoped, explicitly disqualified | **No on its own** — but the bridge we'd build *is* what the brief asks for |
+
+So **neither vendor solves this out of the box**. The thing Para
+markets isn't actually the thing the brief wants. The thing the brief
+wants is the same engineering on either vendor.
+
+### Axis 3 — Outside Turnkey entirely (export to MetaMask / Ledger) → **Yes, first-class**
+
+This is the escape hatch and where **Turnkey is materially stronger
+than Para**. The user can export the raw mnemonic via Turnkey's
+hosted iframe (see the next section) and import it into any standard
+wallet — MetaMask, Rabby, Ledger Live, hardware wallets via seed.
+From the moment of export, the user has the actual key material and
+Turnkey becomes optional infrastructure they can ignore.
+
+This means:
+
+- "What happens if Turnkey disappears" has a clean answer: every user
+  who exported keeps their wallet.
+- "What if the user wants to permanently leave the ENS app and use
+  their wallet as a normal MetaMask wallet" also has a clean answer:
+  they export and import.
+- After export, **axis 2 stops being a problem too** — the exported
+  key lives in MetaMask, which is itself a standalone wallet that
+  works with every dApp.
+
+### Summary table
+
+| Question | Para | Turnkey |
+|---|---|---|
+| Use across all ENS-operated apps? | Yes — same vendor account | **Yes** — shared Turnkey parent org |
+| Use in third-party dApps that don't integrate Para/Turnkey? | **No, not really.** Para Connect only helps if the dApp integrates Para. We'd still need a WalletConnect bridge for general dApps. | **No** — same situation. Solved the same way: WalletConnect bridge in our app (~1 day). |
+| Take the key out to MetaMask/Ledger forever? | **No** — no documented user-facing key export; recovery is vendor-managed | **Yes** — first-class iframe export of the raw mnemonic |
+| Reach if the vendor disappears? | Limited — wallets live in Para's network, no escape hatch | **Full** — exported users keep their wallet forever |
+| Satisfies the ENS brief's "real, generally-usable wallet" requirement out of the box? | **No** — Para Connect is vendor-scoped (the brief explicitly disqualifies this) | **No on its own** — but the WalletConnect bridge we'd build *is* what the brief asks for |
+
+### Implication for the team's decision
+
+The "wallet usable elsewhere?" question reduces to two real
+sub-questions once the marketing is set aside:
+
+**1. Can the wallet talk to arbitrary dApps (Uniswap, OpenSea, etc.)?**
+
+Neither Para Connect nor Turnkey solves this out of the box. The
+practical answer for both vendors is the same: build a WalletConnect
+bridge inside our app using `@reown/walletkit` and route inbound RPC
+to the vendor's signer. That's hard requirement #5 in `vendors.md`,
+and it's roughly a day of work on either vendor. The thing Para
+markets ("Universal Wallet") is **not** this — it's vendor-scoped
+reach that depends on Para's BD pipeline.
+
+**2. Can the user permanently leave with their wallet?**
+
+This is where the vendors actually diverge:
+
+- **Turnkey** — yes, first-class. `handleExportWallet` returns the
+  raw mnemonic via a Turnkey-hosted iframe. After export, the user
+  has self-custody and Turnkey becomes optional infrastructure.
+- **Para** — no documented user-facing export. The MPC model means
+  there's no single key to hand over, and recovery is vendor-managed.
+- **Web3Auth** — depends on share custody configuration; sometimes
+  reassembly is possible, sometimes not.
+
+**The synthesis the team needs to make:**
+
+> Both Para and Turnkey require us to build a WalletConnect bridge
+> if we want the wallet to work in arbitrary third-party dApps. Where
+> they differ is what happens when the vendor disappears or the user
+> wants to permanently move on: **Turnkey's user-facing key export is
+> the only real escape hatch among the three vendors.**
+
+The ENS brief is explicit that this matters: *"ENS is the identity
+layer; the wallet is just a smart contract."* For an identity layer,
+user-controlled escape from vendor lock-in isn't a nice-to-have — it
+is the property that lets the architecture survive vendor failure.
+
+If that framing holds, **Turnkey is the better architectural fit.**
+The "Para Connect" objection doesn't actually deliver the
+portability it markets, and the engineering cost to reach real
+universal-dApp reach is the same on either vendor.
+
+---
+
 ## Can the user take ownership of their private key?
 
 **Yes — first-class, well-designed.** This is one of Turnkey's
