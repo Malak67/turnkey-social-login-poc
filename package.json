@@ -1,0 +1,32 @@
+{
+  "name": "turnkey-poc",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "audit:wagmi-providers": "node ./scripts/audit-wagmi-providers.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.100.14",
+    "@turnkey/react-wallet-kit": "^2.0.0",
+    "@turnkey/viem": "^0.14.29",
+    "@walletconnect/ethereum-provider": "^2.23.9",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "viem": "^2.40.2",
+    "wagmi": "^3.6.16"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "rollup-plugin-visualizer": "^5.14.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  }
+}
