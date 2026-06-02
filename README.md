@@ -30,21 +30,28 @@ React/JS packages. The "decoupling" is *the default state*, not a
 behavioural contract gated on an undocumented prop. The runtime
 assertion is here as a tripwire regardless, per the brief.
 
-Per the user's decision after the brief was issued, this POC's scope is
-restricted to:
+In-scope for this POC:
 
-1. Wagmi non-takeover — gating runtime assertion.
-2. Google OAuth + X OAuth + email OTP → viem `Account`.
-3. Turnkey passkey on the same wallet (re-auth without Google/email).
-4. WalletConnect as inbound EOA connector (via wagmi), not as SCA bridge.
-5. Bundle report.
+1. **Wagmi non-takeover** — gating runtime assertion.
+2. **Social/email auth** — Google OAuth, X OAuth, email OTP → viem `Account`.
+3. **Turnkey passkey attach** on the same wallet (re-auth without
+   Google/email).
+4. **WalletConnect, both directions:**
+   - *Inbound*: external EOAs (MetaMask, Coinbase, etc.) connect into
+     this app via wagmi's `walletConnect()` connector.
+   - *Outbound*: this app exposes the Turnkey wallet to arbitrary
+     third-party dApps via `@reown/walletkit`. Live-tested with a
+     sibling app at `../test-dapp/`.
+5. **Custom wagmi connector** that surfaces the Turnkey signer through
+   `useConnection()`, collapsing what would otherwise be a dual-state
+   Turnkey-vs-wagmi tax into a single canonical address source.
+6. **Bundle report.**
 
-**Rhinestone smart-account integration, the SCA passkey co-validator, and
-the WalletConnect SCA bridge are deferred** — those address hard
-requirements 3, 4, and 5 from `vendors.md`. They are independent of the
-gating question (wagmi non-takeover) and apply identically to all three
-vendors. They are best addressed as a single workstream once a vendor is
-chosen, not duplicated three times.
+**Rhinestone smart-account integration and the SCA-variant of the
+WalletConnect bridge are deferred** — those address hard requirements
+3 and 4 from `vendors.md` (and the SCA half of #5). The WC bridge code
+is signer-shape agnostic; pointing it at a Rhinestone SCA later is
+mechanical once the SCA itself exists.
 
 ---
 
@@ -67,13 +74,32 @@ Two independent connection states (same shape as the Para POC):
 
 Key files:
 
-- `src/wagmi.ts` — standalone wagmi config (EIP-6963, WalletConnect connector)
+**Provider tree + assertions**
+
+- `src/wagmi.ts` — standalone wagmi config (EIP-6963 discovery, WalletConnect inbound connector, custom Turnkey connector)
 - `src/providers.tsx` — provider tree + missing-env gate + **`WagmiBootAssertion`**
 - `src/main.tsx` — popup-context guard (skips full app mount in OAuth popups)
+
+**Turnkey auth + signer**
+
 - `src/auth/useTurnkeySession.ts` — headless Turnkey hook (OTP, Google, X, passkey, wallet creation, signer)
 - `src/auth/LoginModal.tsx` — Google + X + email OTP + external-wallet UI
-- `src/auth/WalletList.tsx` — external wallets from wagmi
-- `src/auth/AccountStatus.tsx` — session view, signer round-trip, create-wallet button, passkey attach
+- `src/auth/WalletList.tsx` — external wallets from wagmi (filters out the programmatic Turnkey connector)
+- `src/auth/AccountStatus.tsx` — session view, signer round-trip, create-wallet button, passkey attach, embeds the WC panel
+
+**wagmi connector wrapping the Turnkey signer**
+
+- `src/turnkey-connector.ts` — custom wagmi connector + an EIP-1193 shim that routes `personal_sign` / `eth_signTypedData_v4` / `eth_sendTransaction` to the Turnkey `LocalAccount`
+- `src/auth/useTurnkeyWagmiBridge.ts` — lifecycle hook that installs the signer on the connector after sign-in (auto-creates an Ethereum wallet if the sub-org template didn't), and tears it down on sign-out
+
+**Outbound WalletConnect bridge (the wallet's "I am a wallet" side)**
+
+- `src/walletconnect/wallet.ts` — initialise `@reown/walletkit`, handle `session_proposal` (auto-approve with the Turnkey address), handle `session_request` (dispatch to the Turnkey signer)
+- `src/walletconnect/useWalletConnectBridge.ts` — React hook: `pair(uri)`, active sessions list, recent requests log
+- `src/walletconnect/WalletConnectPanel.tsx` — UI: paste-`wc:`-URI input + active sessions + recent requests
+
+**Infrastructure**
+
 - `scripts/audit-wagmi-providers.mjs` — CI-style scan of vendor `node_modules` for `WagmiProvider` / `wagmi` imports
 - `bundle-report.html` — committed `rollup-plugin-visualizer` output
 - `vite.config.ts` — `Cross-Origin-Opener-Policy: unsafe-none` for the OAuth popup flow (dev only; tighten for prod)
@@ -166,28 +192,48 @@ co-validator. Hard requirement #4 is about installing a passkey
 validator on the smart account so the SCA is usable independently of
 Turnkey; that's deferred.
 
-### 5. WalletConnect exposure of the SCA — **deferred** (out of scope per user)
+### 5. WalletConnect exposure of the wallet — **PASS** (live-verified, SCA-variant deferred)
 
-This POC uses WalletConnect only as an *inbound* EOA connector via
-`wagmi/connectors → walletConnect()`. That's been tested: scanning the
-QR from a mobile wallet connects through to wagmi's `useConnection()`
-and `useSignMessage()`. The vendors.md hard requirement #5 — exposing
-*the SCA* as a wallet to a third-party dApp via Reown WalletKit — is
-deferred.
+Two directions of WalletConnect:
+
+**Inbound** — `wagmi/connectors → walletConnect()` lets external
+wallets (MetaMask, Coinbase, etc.) connect *into* this app. Wired
+in `src/wagmi.ts`. Tested by scanning the wagmi QR from a mobile
+wallet.
+
+**Outbound — built and live-tested.** This POC now exposes the
+Turnkey-backed wallet *out* to any third-party dApp via
+`@reown/walletkit`. See `src/walletconnect/wallet.ts` (the bridge),
+`src/walletconnect/useWalletConnectBridge.ts` (the React hook), and
+the "Wallet (outbound WalletConnect)" section in the
+AccountStatus card. A sibling app at `Social-Wallet/test-dapp/`
+plays the role of a generic third-party dApp; it has zero Turnkey
+code and connects to the wallet purely through WalletConnect.
+
+Live-tested end-to-end: dApp generates `wc:` URI → user pastes into
+wallet → wallet auto-approves → dApp's `useConnection()` shows the
+Turnkey address → dApp signs messages / typed data / sends
+transactions, all routed through the Turnkey signer.
+
+The SCA-variant of this requirement — exposing a *Rhinestone SCA*
+(not the bare Turnkey EOA) via WalletConnect — is still deferred
+along with the rest of the SCA work. The bridge code is signer-shape
+agnostic; swapping the EOA for an SCA at the dispatch layer is
+mechanical.
 
 ### 6. Bundle and runtime cost — **measured**
 
 `npm run build` output (rolldown):
 
 ```
-dist/   5.3 MB total
-  79 JS chunks
-  1.6 MB index-*.js (largest single chunk)
-  660 KB nodecrypto chunk
-  1.0 MB brotli_wasm_bg.wasm   ← WalletConnect / Reown WASM
-  336 KB lottie-react chunk    ← Turnkey wallet-kit's animation runtime
-  164 KB w3m-modal             ← Reown Web3Modal
-  140 KB ApiController         ← @reown/appkit
+dist/   ~5.7 MB total
+  ~80 JS chunks
+  2.4 MB index-*.js (largest single chunk; Turnkey + WC bridge core)
+  660 KB nodecrypto chunk     ← Node-builtins polyfill for WC
+  336 KB lottie-react chunk   ← Turnkey wallet-kit's animation runtime
+  164 KB w3m-modal            ← Reown Web3Modal
+  140 KB ApiController        ← @reown/appkit
+  + brotli_wasm WASM blob for the WC relay
 ```
 
 Bundle report committed at `bundle-report.html`.
@@ -556,46 +602,108 @@ This will grow to *three* states once the Rhinestone SCA layer is added
 | **Key export to user** | Not user-facing (Para's recovery is vendor-managed). | **First-class** — `handleExportWallet` via Turnkey iframe; user owns the raw mnemonic. |
 | **Pricing model** | Per-MAU tiers. | Per-signature. |
 | **Bundle weight (Turnkey/Para alone)** | High — Solana connectors, AA shims, ethers v6 all visible in `dist/`. | Moderate — `ethers@6` installed but tree-shaken; Lottie unavoidable. |
-| **Bundle weight (with WalletConnect)** | n/a in Para POC (no WC). | 5.3 MB total; ~3 MB attributable to Reown / WalletConnect. |
+| **Bundle weight (with WalletConnect)** | n/a in Para POC (no WC). | ~5–6 MB total; ~3 MB attributable to Reown / WalletConnect across 79+ chunks. |
+| **WalletConnect-as-wallet bridge (outbound)** | Not built; "Para Connect" is vendor-scoped, not the same thing. | **Built and live-tested in this POC** (`src/walletconnect/` + `../test-dapp/`). |
 | **Dashboard UX (developer)** | Smooth. | **Several gotchas** — three-touch OAuth setup (toggle + Client ID + whitelist), sub-org template needs manual config for default wallet, X OAuth 2.0 is hidden behind "Set up". |
 | **Trust model of the embedded key** | Para's MPC network holds the share. | Turnkey's secure enclaves hold the key; user can export. |
 | **What happens if vendor disappears** | User can't easily migrate; recovery is via Para. | Pre-export → user has the key. Without export, parent-org API key access is needed. |
 
 ---
 
-## Setup
+## Setup — the wallet alone
 
 ```bash
+cd turnkey-poc/
 npm install
 cp .env.example .env
 # edit .env with your Turnkey org id, Auth Proxy config id,
-# Google client id, X client id, and (optional) WalletConnect project id
+# Google client id, X client id, and WalletConnect project id
 npm run dev
 ```
 
-Without `VITE_TURNKEY_ORGANIZATION_ID` / `VITE_TURNKEY_AUTH_PROXY_CONFIG_ID`,
-the app renders a setup notice instead of white-screening
-(`TurnkeyProvider` throws on missing config, so we gate on the env vars
-in `src/providers.tsx`).
+Opens on **http://localhost:5173**.
 
-To get the values, see the "Integration gotchas" section above. Short
-version:
+Without `VITE_TURNKEY_ORGANIZATION_ID` /
+`VITE_TURNKEY_AUTH_PROXY_CONFIG_ID`, the app renders a setup notice
+instead of white-screening (`TurnkeyProvider` throws on missing config,
+so we gate on the env vars in `src/providers.tsx`).
+
+To get the values:
 
 1. **Turnkey** — sign up at `app.turnkey.com`. Enable Auth Proxy in
-   Wallet Kit → Configuration. Copy `Organization ID` (top-right user
-   dropdown) and `Auth Proxy Config ID` (the `Config ID` value in the
-   Auth Proxy box).
+   **Wallet Kit → Configuration**. Copy `Organization ID` (top-right
+   user dropdown) and `Auth Proxy Config ID` (the `Config ID` value in
+   the Auth Proxy box).
 2. **Google** — create an OAuth 2.0 Client ID at Google Cloud Console.
-   Add `http://localhost:5173` to Authorized redirect URIs. Paste the
-   Client ID into Turnkey's Social Logins → Google AND the Social
-   Linking whitelist (yes, both — the dashboard requires it).
+   Add `http://localhost:5173` to **Authorized redirect URIs**. Paste
+   the Client ID into Turnkey's **Social Logins → Google** AND the
+   **Social Linking → Google Whitelisted Client IDs** list (yes, both
+   — the dashboard requires it).
 3. **X** — create a Developer app at `developer.x.com`, then under
-   "User authentication settings → Set up" choose **Web App** and
-   enable OAuth 2.0. Save the Client ID + Client Secret X shows you.
-   In Turnkey: OAuth 2.0 tab → Add credential → X → paste both. Then
-   back to Authentication tab → Social Logins → X → Select credential.
+   **User authentication settings → Set up** choose **Web App** and
+   enable OAuth 2.0. Save the Client ID + Client Secret X shows you
+   (one-time view). In Turnkey: **OAuth 2.0** tab → **Add credential**
+   → X → paste both. Then back to the **Authentication** tab →
+   **Social Logins → X → Select credential**.
 4. **WalletConnect** — create a project at `cloud.reown.com`. Copy the
    Project ID.
+
+Step-by-step gotchas for each are in the "Integration gotchas" section
+above.
+
+---
+
+## Running the wallet + test-dapp together (end-to-end WC test)
+
+To verify the outbound WalletConnect bridge, you need this app **plus**
+the sibling test-dapp at `../test-dapp/`. They run on different ports
+and talk over WalletConnect's real relay, not over localhost shortcuts.
+
+```bash
+# terminal 1 — the wallet (this directory)
+cd turnkey-poc/
+npm install            # one-time
+npm run dev            # → http://localhost:5173
+
+# terminal 2 — the test dApp
+cd ../test-dapp/
+npm install            # one-time
+cp .env.example .env   # one-time; reuse the same VITE_WALLETCONNECT_PROJECT_ID
+npm run dev            # → http://localhost:5174
+```
+
+Both apps must share the **same** `VITE_WALLETCONNECT_PROJECT_ID` —
+that's how Reown's relay knows the two halves of the conversation
+belong to the same project.
+
+### The test flow
+
+1. **Wallet tab** (`localhost:5173`) — sign in via Google / X / email.
+   After auth lands you should see your Turnkey address in the account
+   card with **Source: Turnkey**.
+2. **dApp tab** (`localhost:5174`) — click **"Connect via WalletConnect"**.
+   A Reown modal opens with a QR code. Look for the copy icon and copy
+   the `wc:...` URI.
+3. **Wallet tab** — scroll to **"Wallet (outbound WalletConnect)"**,
+   paste the URI, click **"Connect to dApp"**. The wallet auto-approves
+   the session.
+4. **dApp tab** — the modal closes, `useConnection()` reports your
+   Turnkey address as the connected wallet, and you can now click:
+   - **"Sign a message"** — `personal_sign` round-tripped through the
+     Turnkey signer
+   - **"Sign typed data"** — EIP-712 variant
+   - **"Send 0 ETH to myself"** — `eth_sendTransaction`, needs testnet
+     ETH for gas
+5. **Wallet tab** — the "Recent requests" log shows the dApp's name,
+   the RPC method, and the chain ID for each request.
+
+The test dApp has **zero Turnkey code** — it's a pure WalletConnect
+consumer. Every signature traverses the real WC relay, the same path
+Uniswap or OpenSea would use. If this works, the wallet is reachable
+from any WalletConnect-capable dApp on the web.
+
+See `../test-dapp/README.md` for the dApp side of this and what it
+exists to prove.
 
 ---
 
@@ -650,15 +758,24 @@ These items are from `vendors.md` and were intentionally not built:
 - **Passkey co-validator on the SCA** — install
   `@rhinestone/sdk/modules/passkey-validator` and demonstrate a userOp
   signed by the passkey only, with no Turnkey session active.
-- **WalletConnect-as-wallet bridge** — expose the SCA via
-  `@reown/walletkit` (the package is already in the lock; the bridge
-  itself is not wired) so a third-party test dApp can request
-  signatures.
+- **WalletConnect bridge against the SCA (not the EOA)** — the bridge
+  is built and exposes the bare Turnkey EOA today. Pointing the same
+  dispatch layer at a Rhinestone SCA is mechanical once the SCA
+  itself exists.
 - **Telegram OAuth** — via custom OIDC verifier in the Turnkey dashboard.
   Out of scope per Q1 of `vendors.md`.
 - **Production hardening of the OAuth popup flow** — tighten the COOP
   to `same-origin-allow-popups` (instead of `unsafe-none`) and verify
   the popup flow works over HTTPS against the production origin.
+- **Deploy the wallet to a public URL** — for real users this app
+  needs to live at a stable origin (e.g. `wallet.ens.eth` via IPFS +
+  ENS resolver, or a CDN for faster iteration). Deployment target is
+  a product decision, not a code one.
+- **ENS Manager app** — a sibling app at `Social-Wallet/ens-manager-poc/`
+  (not yet built) that reuses the same Turnkey auth foundation and
+  adds ENS-specific UI (name search, registration, records). Talks
+  to the wallet via WalletConnect or shares the parent org for
+  Turnkey-direct flows.
 
 Each of these is vendor-agnostic (the Rhinestone integration is the
 same shape regardless of where the signer comes from) and is the right

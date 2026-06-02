@@ -5,6 +5,7 @@ import {
   useSignMessage,
 } from "wagmi";
 import { useTurnkeySession } from "./useTurnkeySession";
+import { WalletConnectPanel } from "../walletconnect/WalletConnectPanel";
 
 export function AccountStatus() {
   const tk = useTurnkeySession();
@@ -155,6 +156,12 @@ export function AccountStatus() {
       {(tk.error || signingError) && (
         <div className="error">{tk.error ?? signingError}</div>
       )}
+
+      <hr style={{ border: "none", borderTop: "1px solid #eee" }} />
+
+      {/* The wallet's outbound role: expose itself via WalletConnect so any
+          third-party dApp can sign through the Turnkey signer. */}
+      <WalletConnectPanel />
 
       <hr style={{ border: "none", borderTop: "1px solid #eee" }} />
       <button className="btn" onClick={handleSignOut}>

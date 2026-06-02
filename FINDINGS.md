@@ -391,7 +391,7 @@ ENS-operated app for free. The "Social Linking" whitelist we
 configured during setup is what enables this — it tells Turnkey to
 match new logins against existing sub-orgs by verified email.
 
-### Axis 2 — In third-party dApps outside ENS (Uniswap, OpenSea, …) → **Not built-in for Turnkey; Para ships a partial answer**
+### Axis 2 — In third-party dApps outside ENS (Uniswap, OpenSea, …) → **Built and working in this POC**
 
 The Turnkey embedded wallet **is not a standalone wallet** like
 MetaMask or Rabby. It lives inside an app that integrates Turnkey's
@@ -401,21 +401,29 @@ can connect to a browser extension.
 Two architecturally distinct ways this gets fixed:
 
 **Option A — A WalletConnect bridge inside the integrator app.** This
-is what hard requirement #5 in `vendors.md` describes and what this
-POC deferred. Flow:
+is what hard requirement #5 in `vendors.md` describes. We built it
+in this POC. The flow:
 
-1. User is in the ENS app, signed in via Turnkey (active session).
+1. User is in the wallet app, signed in via Turnkey (active session).
 2. User goes to Uniswap (or any dApp) in another tab → "Connect
    Wallet" → "WalletConnect" → QR code or pairing URI.
-3. User pastes the URI into the ENS app's wallet view.
-4. The ENS app brokers the request: Uniswap ↔ WalletConnect ↔ ENS
-   app ↔ Turnkey signer.
-5. Uniswap thinks it's talking to a normal wallet.
+3. User pastes the URI into the wallet's "Connect to dApp" field.
+4. The wallet brokers the request: dApp ↔ WalletConnect relay ↔
+   wallet ↔ Turnkey signer.
+5. The dApp thinks it's talking to a normal wallet.
 
-The signing itself is trivial — the Turnkey signer is a vanilla viem
+**This is now demonstrated end-to-end in code.** See
+`src/walletconnect/wallet.ts` (the bridge),
+`src/walletconnect/useWalletConnectBridge.ts` (the React hook), and
+the sibling `Social-Wallet/test-dapp/` (a generic WalletConnect dApp
+that proves the wallet works for arbitrary integrators). Live-tested:
+dApp connects, signs `personal_sign`, signs `eth_signTypedData_v4`,
+and sends `eth_sendTransaction` — all routed through the Turnkey
+signer.
+
+The signing is trivial because the Turnkey signer is a vanilla viem
 `LocalAccount` and `@reown/walletkit` is designed to wrap exactly
-this. What's not yet built is the inbound-WalletConnect routing.
-**We'd build it ourselves.**
+this.
 
 **Option B — Some vendors market a cross-app feature.** Para markets
 **"Para Connect"** as their "Universal Wallet" — the pitch is that
@@ -459,13 +467,17 @@ For ENS, the practical comparison:
 | | Para | Turnkey |
 |---|---|---|
 | Cross-vendor-app reach (built-in) | "Para Connect" — small in practice | None |
-| Cross-app reach to arbitrary dApps | Same path as Turnkey: WalletConnect bridge inside the integrator app | Same path as Para: WalletConnect bridge inside the integrator app |
-| Time to wire a real WalletConnect bridge | ~1 day with `@reown/walletkit` | ~1 day with `@reown/walletkit` |
-| Does this satisfy the ENS brief? | **No** — Para Connect is vendor-scoped, explicitly disqualified | **No on its own** — but the bridge we'd build *is* what the brief asks for |
+| Cross-app reach to arbitrary dApps | Same path as Turnkey: WalletConnect bridge inside the integrator app | **Built in this POC** (`src/walletconnect/`) |
+| Time it actually took to wire | n/a in this POC | ~half a day with `@reown/walletkit` |
+| Does this satisfy the ENS brief? | **No** — Para Connect is vendor-scoped, explicitly disqualified | **Yes** — the bridge we built *is* what the brief asks for |
 
-So **neither vendor solves this out of the box**. The thing Para
-markets isn't actually the thing the brief wants. The thing the brief
-wants is the same engineering on either vendor.
+So **the thing Para markets isn't actually the thing the brief wants,
+and the thing the brief wants is what we built on Turnkey.** Para's
+"Universal Wallet" pitch shrinks to "cross-app continuity within
+Para's integrator base" once you scrutinize it; the actually-useful
+property ("works in any dApp on the web") requires the same
+WalletConnect bridge regardless of vendor — and on Turnkey, it's
+done.
 
 ### Axis 3 — Outside Turnkey entirely (export to MetaMask / Ledger) → **Yes, first-class**
 
@@ -492,7 +504,7 @@ This means:
 | Question | Para | Turnkey |
 |---|---|---|
 | Use across all ENS-operated apps? | Yes — same vendor account | **Yes** — shared Turnkey parent org |
-| Use in third-party dApps that don't integrate Para/Turnkey? | **No, not really.** Para Connect only helps if the dApp integrates Para. We'd still need a WalletConnect bridge for general dApps. | **No** — same situation. Solved the same way: WalletConnect bridge in our app (~1 day). |
+| Use in third-party dApps that don't integrate Para/Turnkey? | **No, not really.** Para Connect only helps if the dApp integrates Para. A real WalletConnect bridge is still needed for general dApps. | **Yes** — WalletConnect bridge built in this POC. Live-tested with a generic test dApp at `Social-Wallet/test-dapp/`. |
 | Take the key out to MetaMask/Ledger forever? | **No** — no documented user-facing key export; recovery is vendor-managed | **Yes** — first-class iframe export of the raw mnemonic |
 | Reach if the vendor disappears? | Limited — wallets live in Para's network, no escape hatch | **Full** — exported users keep their wallet forever |
 | Satisfies the ENS brief's "real, generally-usable wallet" requirement out of the box? | **No** — Para Connect is vendor-scoped (the brief explicitly disqualifies this) | **No on its own** — but the WalletConnect bridge we'd build *is* what the brief asks for |
@@ -504,13 +516,22 @@ sub-questions once the marketing is set aside:
 
 **1. Can the wallet talk to arbitrary dApps (Uniswap, OpenSea, etc.)?**
 
-Neither Para Connect nor Turnkey solves this out of the box. The
-practical answer for both vendors is the same: build a WalletConnect
-bridge inside our app using `@reown/walletkit` and route inbound RPC
-to the vendor's signer. That's hard requirement #5 in `vendors.md`,
-and it's roughly a day of work on either vendor. The thing Para
-markets ("Universal Wallet") is **not** this — it's vendor-scoped
-reach that depends on Para's BD pipeline.
+For Turnkey: **yes, this POC demonstrates it.** We built the
+WalletConnect-as-wallet bridge in `src/walletconnect/` and a
+generic test dApp (`Social-Wallet/test-dapp/`) that connects to
+the Turnkey wallet purely through WalletConnect, with zero
+Turnkey code. End-to-end tested: connect → sign message → sign
+typed data → send transaction, all routed through the
+Turnkey-backed viem `LocalAccount`. Roughly half a day of code.
+
+For Para: their "Para Connect" feature provides cross-app
+continuity within Para's integrator base, but for arbitrary
+non-Para-integrated dApps the same WalletConnect-bridge work
+would still be needed. The marketing claim and the
+actually-useful property aren't the same thing.
+
+This was hard requirement #5 in `vendors.md`. It's now satisfied
+for Turnkey.
 
 **2. Can the user permanently leave with their wallet?**
 
@@ -526,11 +547,13 @@ This is where the vendors actually diverge:
 
 **The synthesis the team needs to make:**
 
-> Both Para and Turnkey require us to build a WalletConnect bridge
-> if we want the wallet to work in arbitrary third-party dApps. Where
-> they differ is what happens when the vendor disappears or the user
-> wants to permanently move on: **Turnkey's user-facing key export is
-> the only real escape hatch among the three vendors.**
+> We've now demonstrated that a Turnkey-backed wallet, fronted by a
+> small `@reown/walletkit` bridge we wrote, is reachable from any
+> WalletConnect-capable dApp on the web. Where Turnkey and Para
+> differ in this evaluation isn't engineering effort — it's
+> escape-hatch design: **Turnkey's user-facing key export is the
+> only real "vendor disappears, user keeps wallet" answer among the
+> three vendors.**
 
 The ENS brief is explicit that this matters: *"ENS is the identity
 layer; the wallet is just a smart contract."* For an identity layer,

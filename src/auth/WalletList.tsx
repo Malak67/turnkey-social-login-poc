@@ -11,7 +11,12 @@ import { useConnect, useConnectors } from "wagmi";
  * instead of being swallowed by the fire-and-forget `mutate`.
  */
 export function WalletList() {
-  const connectors = useConnectors();
+  // Hide the Turnkey connector from the manual wallet list — it's a
+  // programmatic connector driven by useTurnkeyWagmiBridge after the
+  // user signs in via Google / X / email. Clicking it directly would
+  // try to connect with no signer and fail with
+  // "Turnkey connector: no active signer."
+  const connectors = useConnectors().filter((c) => c.id !== "turnkey");
   const { mutateAsync: connectAsync, isPending } = useConnect();
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
